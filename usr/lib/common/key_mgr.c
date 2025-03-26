@@ -1015,6 +1015,7 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
             TRACE_DEVEL("rsa_priv_wrap_get_data failed.\n");
             goto done;
         }
+        TRACE_DEVEL("rsa_priv_wrap_get_data called; data_len: %lu\n", data_len);
         break;
 #if !(NODSA)
     case CKK_DSA:
