@@ -1507,7 +1507,12 @@ CK_RV secret_key_set_default_attributes(TEMPLATE *tmpl, CK_ULONG mode)
     sensitive_attr->type = CKA_SENSITIVE;
     sensitive_attr->ulValueLen = sizeof(CK_BBOOL);
     sensitive_attr->pValue = (CK_BYTE *) sensitive_attr + sizeof(CK_ATTRIBUTE);
-    *(CK_BBOOL *) sensitive_attr->pValue = FALSE;
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: set sensitive by default
+    *(CK_BBOOL *)sensitive_attr->pValue = TRUE;
+#else
+    *(CK_BBOOL *)sensitive_attr->pValue = FALSE;
+#endif
 
     encrypt_attr->type = CKA_ENCRYPT;
     encrypt_attr->ulValueLen = sizeof(CK_BBOOL);
@@ -1532,12 +1537,22 @@ CK_RV secret_key_set_default_attributes(TEMPLATE *tmpl, CK_ULONG mode)
     wrap_attr->type = CKA_WRAP;
     wrap_attr->ulValueLen = sizeof(CK_BBOOL);
     wrap_attr->pValue = (CK_BYTE *) wrap_attr + sizeof(CK_ATTRIBUTE);
-    *(CK_BBOOL *) wrap_attr->pValue = TRUE;
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: wrap is in conflict with DECRYPT
+    *(CK_BBOOL *)wrap_attr->pValue = FALSE;
+#else
+    *(CK_BBOOL *)wrap_attr->pValue = TRUE;
+#endif
 
     unwrap_attr->type = CKA_UNWRAP;
     unwrap_attr->ulValueLen = sizeof(CK_BBOOL);
     unwrap_attr->pValue = (CK_BYTE *) unwrap_attr + sizeof(CK_ATTRIBUTE);
-    *(CK_BBOOL *) unwrap_attr->pValue = TRUE;
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: unwrap is in conflict with ENCRYPT
+    *(CK_BBOOL *)unwrap_attr->pValue = FALSE;
+#else
+    *(CK_BBOOL *)unwrap_attr->pValue = TRUE;
+#endif
 
     extractable_attr->type = CKA_EXTRACTABLE;
     extractable_attr->ulValueLen = sizeof(CK_BBOOL);
@@ -1795,12 +1810,20 @@ CK_RV secret_key_unwrap(STDLL_TokData_t *tokdata,
         TRACE_DEVEL("build attribute failed\n");
         goto cleanup;
     }
+    // BCFS-FIX: ALWAYS_SENSITIVE is set to FALSE since I don't know from where
+    // you get the key and the real SENSITIVEness of the key.
+    // SENSITIVE is alway set to true on unwrap just to avoid too easy attacks
+    // where you just wrap and unwrap a key and have it in clear.
     rc = build_attribute(CKA_ALWAYS_SENSITIVE, &false, 1, &always_sens);
     if (rc != CKR_OK) {
         TRACE_DEVEL("build attribute failed\n");
         goto cleanup;
     }
-    rc = build_attribute(CKA_SENSITIVE, &false, 1, &sensitive);
+#ifdef CONFLICTCHECK
+    rc = build_attribute( CKA_SENSITIVE,         &true, 1, &sensitive );
+#else
+    rc = build_attribute( CKA_SENSITIVE,         &false, 1, &sensitive );
+#endif
     if (rc != CKR_OK) {
         TRACE_DEVEL("build_attribute failed\n");
         goto cleanup;
@@ -1864,6 +1887,207 @@ cleanup:
 }
 
 
+#ifdef CONFLICTCHECK
+
+//BCFS-FIX: Gets conflicting attributes type for
+// the given one (if any).
+
+DL_NODE*
+get_secret_key_conflicting_attributes( CK_ATTRIBUTE_TYPE att )
+{
+    DL_NODE *conflicting = NULL;
+    CK_ATTRIBUTE_TYPE conflict;
+    // Replace the following code with a config file
+    // or similar
+    // TODO:
+    // IDEA: when pkcsslotd starts it reads a config file
+    // 	and populates a global struct where for each attribute
+    //	type there is a list of conflicting attributes
+    // NOTE: As it is now the conflicts are symmetric so
+    // I can check them just in "one-way"
+    switch (att)
+    {
+        case CKA_DECRYPT:
+            conflict = CKA_WRAP;
+            conflicting = dlist_add_as_first( conflicting, &conflict);
+            break;
+        // case CKA_WRAP:
+        //     conflict = CKA_DECRYPT;
+        //     conflicting = dlist_add_as_first( att, &conflict);
+        //     break;
+        case CKA_ENCRYPT:
+            conflict = CKA_UNWRAP;
+            conflicting = dlist_add_as_first( conflicting, &conflict);
+            break;
+        // case CKA_UNWRAP:
+        //     conflict = CKA_ENCRYPT;
+        //     conflicting = dlist_add_as_first( att, &conflict);
+        //     break;
+    }
+    return conflicting;
+}
+
+// BCFS-FIX: Checks if conflicting attributes are going
+// to be set in the template
+CK_RV
+secret_key_check_conflicts( TEMPLATE *tmpl )
+{
+    DL_NODE *conflicts = NULL;
+    DL_NODE *ca;
+    DL_NODE *node = tmpl->attribute_list;
+    CK_RV rc, found;
+
+    while (node)
+    {
+	CK_ATTRIBUTE *attr = (CK_ATTRIBUTE *)node->data;
+	CK_ATTRIBUTE *ta;
+
+	dlist_purge( conflicts );
+	conflicts = NULL;
+	ca = NULL;
+
+	if (attr->pValue && *((CK_BBOOL *)attr->pValue) == TRUE)
+	{
+	    conflicts = get_secret_key_conflicting_attributes( attr->type );
+	    ca = conflicts;
+	    while (ca)
+	    {
+		found = template_attribute_find( tmpl, *((CK_ATTRIBUTE_TYPE *)ca->data), &ta );
+		if (found && (*(CK_BBOOL *)ta->pValue == TRUE))
+		{
+		    OCK_LOG_ERR(ERR_CONFLICT_ATT);
+		    return CKR_TEMPLATE_INCONSISTENT;
+		}
+
+		ca = ca->next;
+	    }
+	}
+
+	node = node->next;
+    }
+
+    return CKR_OK;
+}
+
+#endif
+
+#ifdef STICKYATTRIBUTES
+
+// BCFS-FIX: there esists a set of attributes which MUST have
+// a sticky policy. These attribute are defined here as follows.
+
+CK_BBOOL
+is_sticky( CK_ATTRIBUTE_TYPE a )
+{
+    switch(a){
+	case CKA_ENCRYPT:
+	case CKA_DECRYPT:
+	case CKA_SIGN:
+	case CKA_VERIFY:
+	case CKA_WRAP:
+	case CKA_UNWRAP:
+	case CKA_SENSITIVE:
+	case CKA_EXTRACTABLE:
+	case CKA_ALWAYS_SENSITIVE:
+	case CKA_NEVER_EXTRACTABLE:
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+CK_RV
+get_stickyness( CK_ATTRIBUTE_TYPE a, CK_BBOOL *mode)
+{
+    //TODO: all these should be setted via a config file
+    switch (a){
+	case CKA_ENCRYPT:
+	case CKA_DECRYPT:
+	case CKA_SIGN:
+	case CKA_VERIFY:
+	case CKA_WRAP:
+	case CKA_UNWRAP:
+	case CKA_SENSITIVE:
+	    *mode = TRUE;
+	    return CKR_OK;
+	case CKA_EXTRACTABLE:
+	    *mode = FALSE;
+	    return CKR_OK;
+    }
+
+    return CKR_ATTRIBUTE_READ_ONLY;
+}
+
+// BCFS-FIX: checks for a stick_on or sticky_off attribute
+// updates. A sticky_both is simply read-only attribue so
+// no need to check it here.
+CK_RV
+sticky( TEMPLATE *curr, CK_ATTRIBUTE *attr, CK_BBOOL sticky_mode )
+{
+    CK_ATTRIBUTE *curr_attr;
+
+    // What's the right error to get back?
+    if (!attr)
+    {
+	OCK_LOG_ERR(ERR_ATTRIBUTE_READ_ONLY);
+	return CKR_ATTRIBUTE_READ_ONLY;
+    }
+
+    CK_BBOOL wanted_value = *(CK_BBOOL *)attr->pValue;
+
+    CK_RV found = template_attribute_find( curr, attr->type, &curr_attr );
+    if (!found)
+    {
+	OCK_LOG_ERR(ERR_ATTRIBUTE_READ_ONLY);
+	return CKR_ATTRIBUTE_READ_ONLY;
+    }
+
+    CK_BBOOL curr_value = *(CK_BBOOL *)curr_attr->pValue;
+    if (curr_value == sticky_mode && wanted_value != sticky_mode)
+    {
+	OCK_LOG_ERR(ERR_STICKY_MOD);
+	return CKR_ATTRIBUTE_READ_ONLY;
+    }
+
+    return CKR_OK;
+}
+
+CK_RV
+secret_key_validate_sticky_attribute( TEMPLATE *curr, CK_ATTRIBUTE *attr)
+{
+    CK_BBOOL sticky_mode;
+    if (get_stickyness( attr->type, &sticky_mode ) == CKR_OK)
+	return sticky(curr, attr, sticky_mode);
+    return CKR_ATTRIBUTE_READ_ONLY;
+}
+
+CK_RV
+secret_key_validate_sticky_attributes( TEMPLATE *curr,
+                                       TEMPLATE *new,
+                                       CK_ULONG class,
+                                       CK_ULONG subclass)
+{
+    DL_NODE *node = new->attribute_list;
+    CK_RV rc;
+
+    while (node)
+    {
+	CK_ATTRIBUTE *attr = (CK_ATTRIBUTE *)node->data;
+	if (is_sticky(attr->type))
+	    rc = secret_key_validate_sticky_attribute(curr, attr);
+	else
+	    rc = template_validate_attribute(new, attr, class, subclass, MODE_MODIFY);
+
+	if (rc != CKR_OK)
+	    return rc;
+
+	node = node->next;
+    }
+
+    return CKR_OK;
+}
+
+#endif
 
 
 // secret_key_validate_attribute()

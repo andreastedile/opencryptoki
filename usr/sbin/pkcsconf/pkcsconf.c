@@ -704,6 +704,24 @@ void print_token_info(int slot_id, CK_TOKEN_INFO *TokenInfo)
     printf("Token #%d Info:\n", slot_id);
     printf("\tLabel: %.32s\n", TokenInfo->label);
     printf("\tManufacturer: %.32s\n", TokenInfo->manufacturerID);
+// BCFS-FIX
+#ifdef CONFLICTCHECK
+#define F_CONFL "Conflicting attr."
+#else
+#define F_CONFL "None"
+#endif
+#ifdef STICKYATTRIBUTES
+#define F_STICKY "Sticky attr."
+#else
+#define F_STICKY "None"
+#endif
+#ifdef WRAPFORMAT
+#define F_FORMAT "Wrap-format"
+#else
+#define F_FORMAT "None"
+#endif
+    printf("\tEnabled fixes: %s / %s / %s\n", F_CONFL,F_STICKY,F_FORMAT);
+////////
     printf("\tModel: %.16s\n", TokenInfo->model);
     printf("\tSerial Number: %.16s\n", TokenInfo->serialNumber);
     printf("\tFlags: 0x%lX (", TokenInfo->flags);

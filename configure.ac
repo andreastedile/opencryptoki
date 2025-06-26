@@ -216,6 +216,30 @@ AC_ARG_ENABLE([pkcstok_admin],
 	[],
 	[enable_pkcstok_admin=yes])
 
+dnl --- unextratable keys not readable (fix)
+AC_ARG_ENABLE([unextractable-check],
+    AS_HELP_STRING([--enable-unextractable-check],[make unextractable keys unreadable @<:@default=no@:>@]),
+    [],
+    [enable_unextractable_check=no])
+
+dnl --- conflicting attributes (fix)
+AC_ARG_ENABLE([conflict-check],
+    AS_HELP_STRING([--enable-conflict-check],[check for conflicting wrap/decrypt and unwrap/encrypt attributes @<:@default=no@:>@]),
+    [],
+    [enable_conflict_check=no])
+
+dnl --- sticky attributes (fix)
+AC_ARG_ENABLE([sticky-attributes],
+    AS_HELP_STRING([--enable-sticky-attributes],[turn on sticky attributes policy @<:@default=no@:>@]),
+    [],
+    [enable_sticky_attributes=no])
+
+dnl --- wrapping formats (fix)
+AC_ARG_ENABLE([wrap-format],
+    AS_HELP_STRING([--enable-wrap-format],[export key attributes on DES_* wrap and check them when unwrapping @<:@default=no@:>@]),
+    [],
+    [enable_wrap_format=no])
+
 dnl ---
 dnl --- Check for external software
 dnl --- Define what to check based on enabled features
@@ -382,6 +406,30 @@ AC_CHECK_HEADERS([lber.h ldap.h],
 		[AC_MSG_ERROR([lber.h and ldap.h are missing. Please install
 			      'openldap-devel'.])])
 AC_SUBST([OPENLDAP_LIBS])
+
+dnl --- unextratable keys not readable (fix)
+if test "x$enable_unextractable_check" = xyes; then
+    CFLAGS="$CFLAGS -DEXTRACTCHECK"
+ #   AC_MSG_RESULT([*** Enabling unextractable keys unreadable check at user request ***])
+fi
+
+dnl --- conflicting attributes (fix)
+if test "x$enable_conflict_check" = xyes; then
+	CFLAGS="$CFLAGS -DCONFLICTCHECK"
+#	AC_MSG_RESULT([*** Enabling conficting attributes check at user request ***])
+fi
+
+dnl --- sticky attributes (fix)
+if test "x$enable_sticky_attributes" = xyes; then
+	CFLAGS="$CFLAGS -DSTICKYATTRIBUTES"
+#	AC_MSG_RESULT([*** Enabling sticky attributes policy at user request ***])
+fi
+
+dnl --- wrapping formats (fix)
+if test "x$enable_wrap_format" = xyes; then
+	CFLAGS="$CFLAGS -DWRAPFORMAT"
+#	AC_MSG_RESULT([*** Enabling wrapping format at user request ***])
+fi
 
 dnl --- first, check what external software is present or specified
 dnl --- with --with-package=DIR
@@ -874,6 +922,13 @@ echo "Token-specific features:"
 echo "	pkcsep11migrate build:	$enable_pkcsep11_migrate"
 echo "	pkcsep11session build:	$enable_pkcsep11_session"
 echo "	pkcscca build:		$enable_pkcscca"
+echo
+echo "cryptokiX fixes:"
+echo "	Unextractable:		$enable_unextractable_check"
+echo "	Conflicting:		$enable_conflict_check"
+echo "	Sticky:			$enable_sticky_attributes"
+echo "	wrapping formats:	$enable_wrap_format"
+echo
 echo
 echo "pkcsslotd user:		$pkcsslotd_user"
 echo "pkcs group:		$pkcs_group"

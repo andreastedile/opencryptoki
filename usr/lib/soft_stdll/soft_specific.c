@@ -56,7 +56,9 @@
 #define MAX_GENERIC_KEY_SIZE 256
 
 const char manuf[] = "IBM";
-const char model[] = "Soft";
+// BCFS-FIX
+const char model[] = "OpencryptokiX";
+///////////////
 const char descr[] = "IBM Soft token";
 const char label[] = "softtok";
 

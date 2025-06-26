@@ -42,6 +42,19 @@
 
 #include <openssl/crypto.h>
 
+#ifdef WRAPFORMAT
+
+#include <strings.h>  // for bzero()
+#include <openssl/des.h>
+
+#define ENCODE_SENSITIVE 0x000000001
+#define ENCODE_ALWAYS_SENSITIVE (0x00000001 << 1)
+#define ENCODE_WRAP (0x00000001 << 2)
+#define ENCODE_UNWRAP (0x00000001 << 3)
+#define ENCODE_ENCRYPT (0x00000001 << 4)
+#define ENCODE_DECRYPT (0x00000001 << 5)
+#endif
+
 static CK_BBOOL true = TRUE;
 
 CK_RV key_mgr_apply_always_sensitive_never_extractable_attrs(
@@ -811,6 +824,96 @@ error:
 }
 
 
+#ifdef WRAPFORMAT
+
+CK_RV
+encode_wrap_format( TEMPLATE *tmpl, CK_BYTE *format)
+{
+    CK_ATTRIBUTE *enc, *dec, *wra, *unw, *sen, *asen;
+    CK_RV found_enc, found_dec, found_wra, found_unw, found_sen, found_asen, rc;
+
+    if (!format)
+	return CKR_HOST_MEMORY;
+
+    found_enc = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_ENCRYPT, &enc );
+    found_dec = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_DECRYPT, &dec );
+    found_wra = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_WRAP, &wra );
+    found_unw = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_UNWRAP, &unw );
+    found_sen = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_SENSITIVE, &sen );
+    found_asen = template_attribute_find( tmpl, (CK_ATTRIBUTE_TYPE) CKA_ALWAYS_SENSITIVE, &asen );
+
+    bzero(format, 1);
+    if (found_enc && *(CK_BBOOL *)enc->pValue)
+	*format |= (CK_BYTE) ENCODE_ENCRYPT;
+    if (found_dec && *(CK_BBOOL *)dec->pValue)
+	*format |= (CK_BYTE) ENCODE_DECRYPT;
+    if (found_wra && *(CK_BBOOL *)wra->pValue)
+	*format |= (CK_BYTE) ENCODE_WRAP;
+    if (found_unw && *(CK_BBOOL *)unw->pValue)
+	*format |= (CK_BYTE) ENCODE_UNWRAP;
+    if (found_sen && *(CK_BBOOL *)sen->pValue)
+	*format |= (CK_BYTE) ENCODE_SENSITIVE;
+    if (found_asen && *(CK_BBOOL *)asen->pValue)
+	*format |= (CK_BYTE) ENCODE_ALWAYS_SENSITIVE;
+
+    return CKR_OK;
+}
+
+CK_RV
+wrap_format(CK_BYTE *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK_ULONG wrapped_key_len)
+{
+    CK_BYTE   * formatme  = NULL;
+    CK_BYTE   * mackey    = NULL;
+    CK_BYTE   * iv0       = NULL;
+    CK_ULONG  keylen;
+
+    CK_RV rc;
+    int i,*a,*b;
+
+    if (len * 2 != wrapped_key_len)
+	return CKR_HOST_MEMORY;
+
+    mackey =  (CK_BYTE *) malloc(len);
+    iv0 = (CK_BYTE *) malloc(8);
+    if (!mackey || !iv0){
+	OCK_LOG_ERR(ERR_HOST_MEMORY);
+	return CKR_HOST_MEMORY;
+    }
+    bzero(iv0, 8);
+    keylen = len;
+    //rc = ckm_des_cbc_encrypt(iv0, 8, mackey, &keylen, iv0, attr->pValue);
+    rc = ckm_des_ecb_encrypt(iv0, 8, mackey, &keylen, key);
+    if (rc != CKR_OK){
+	OCK_LOG_ERR(ERR_DES_ECB_ENCRYPT);
+	return rc;
+    }
+
+    formatme = (CK_BYTE *) malloc(wrapped_key_len);
+    if (!formatme){
+	OCK_LOG_ERR(ERR_HOST_MEMORY);
+	return CKR_HOST_MEMORY;
+    }
+    bzero(formatme, wrapped_key_len);
+    memcpy(formatme, wrapped_key, len);
+    // save the encoded attributes on the last byte
+    encode_wrap_format(tmpl, formatme + wrapped_key_len - 1);
+    memcpy(wrapped_key + len, formatme + len, len);
+    keylen = len;
+    rc = ckm_des_cbc_encrypt(formatme, len,  wrapped_key + keylen, &keylen, iv0, mackey);
+    a = (int *) (wrapped_key + len);
+    b = (int *) (formatme + len);
+    for(i = 0; i < len; i+= sizeof(int)){
+	*(b) = (*a)^(*b);
+	a++;
+	b++;
+    }
+    memcpy(iv0, wrapped_key + len, len);
+    return ckm_des_cbc_encrypt(formatme + len, len, wrapped_key + len, &keylen, iv0, mackey);
+}
+
+#endif
+
+
 //
 //
 CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
@@ -825,7 +928,13 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     ENCR_DECR_CONTEXT *ctx = NULL;
     OBJECT *wrapping_key_obj = NULL;
     OBJECT *key_obj = NULL;
+#ifdef WRAPFORMAT
+    OBJECT            * master    = NULL;
+#endif
     CK_BYTE *data = NULL;
+#ifdef WRAPFORMAT
+    CK_BYTE           * formatmac  = NULL;
+#endif
     CK_ULONG data_len;
     CK_OBJECT_CLASS class;
     CK_KEY_TYPE keytype;
@@ -1230,6 +1339,36 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
         OPENSSL_cleanse(data, data_len);
         free(data);
     }
+
+#ifdef WRAPFORMAT
+    switch (mech->mechanism) {
+    case CKM_DES_ECB:
+    case CKM_DES_CBC:
+    case CKM_DES_CBC_PAD:
+        *wrapped_key_len = *wrapped_key_len * 2;
+        if (! length_only) {
+            rc = object_mgr_find_in_map1( ctx->key, &master );
+            if (rc != CKR_OK){
+                OCK_LOG_ERR(ERR_OBJMGR_FIND_MAP);
+                return rc;
+            }
+            rc = template_attribute_find( master->template, CKA_VALUE, &attr );
+            if (rc == FALSE){
+                OCK_LOG_ERR(ERR_ATTRIBUTE_VALUE_INVALID);
+                return CKR_FUNCTION_FAILED;
+            }
+
+            // SISTEMATE POINTER! (wrapped_key)
+            rc = wrap_format(attr->pValue, attr->ulValueLen, key2_obj->template, wrapped_key, *wrapped_key_len);
+            if (rc != CKR_OK)
+                return rc;
+            // free(wrapped_key);
+            // wrapped_key = formatmac;
+            // *wrapped_key_len = *wrapped_key_len * 2;
+        }
+    }
+#endif
+
     encr_mgr_cleanup(tokdata, sess, ctx);
     free(ctx);
 
@@ -1266,7 +1405,15 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
 {
     ENCR_DECR_CONTEXT *ctx = NULL;
     OBJECT *key_obj = NULL, *unwrapping_key_obj = NULL;
+#ifdef WRAPFORMAT
+    OBJECT            * master    = NULL;
+#endif
     CK_BYTE *data = NULL;
+#ifdef WRAPFORMAT
+    CK_BYTE           * formatmac  = NULL;
+    CK_ATTRIBUTE      * attr       = NULL;
+    int b,*f,*w;
+#endif
     CK_ULONG data_len, value_len = 0;
     CK_ULONG keyclass = 0, keytype = 0, priv_keytype = 0;
     CK_BBOOL fromend, not_opaque = FALSE, flag;
@@ -1274,6 +1421,17 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
     CK_ULONG new_attr_count = 0;
     CK_MECHANISM *statistics_mech = mech;
     CK_RV rc;
+
+#ifdef WRAPFORMAT
+
+    switch (mech->mechanism) {
+    case CKM_DES_ECB:
+    case CKM_DES_CBC:
+    case CKM_DES_CBC_PAD:
+        wrapped_key_len = wrapped_key_len / 2;
+    }
+
+#endif
 
     if (!sess || !wrapped_key || !h_unwrapped_key) {
         TRACE_ERROR("%s received bad argument(s)\n", __func__);
@@ -1457,6 +1615,49 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
         goto done;
     }
 
+#ifdef WRAPFORMAT
+    switch (mech->mechanism) {
+    case CKM_DES_ECB:
+    case CKM_DES_CBC:
+    case CKM_DES_CBC_PAD:
+        //data_len = data_len / 2;
+        rc = object_mgr_find_in_map1( h_unwrapping_key, &master );
+        if (rc != CKR_OK){
+            OCK_LOG_ERR(ERR_OBJMGR_FIND_MAP);
+            goto error;
+        }
+        rc = template_attribute_find( master->template, CKA_VALUE, &attr );
+        if (rc == FALSE){
+            OCK_LOG_ERR(ERR_FUNCTION_FAILED);
+            rc = CKR_FUNCTION_FAILED;
+            goto error;
+        }
+
+        formatmac = (CK_BYTE *) malloc(wrapped_key_len * 2);
+        if (!formatmac){
+            OCK_LOG_ERR(ERR_HOST_MEMORY);
+            rc = CKR_HOST_MEMORY;
+            goto error;
+        }
+        memcpy(formatmac, wrapped_key, wrapped_key_len * 2);
+
+        rc = wrap_format(attr->pValue, attr->ulValueLen, key_obj->template, formatmac, wrapped_key_len * 2);
+        if (rc != CKR_OK)
+            return rc;
+        f = (int *) formatmac;
+        w = (int *) wrapped_key;
+        for(b = 0; b < (wrapped_key_len * 2); b+= sizeof(int)){
+            if (*f != *w){
+                OCK_LOG_ERR(ERR_TEMPLATE_INCONSISTENT);
+                rc = CKR_TEMPLATE_INCONSISTENT;
+                goto error;
+            }
+            f++;
+            w++;
+        }
+    }
+#endif
+
     if (token_specific.t_key_unwrap == NULL &&
         token_specific.secure_key_token) {
         TRACE_ERROR("Need a token specific unwrap for a secure key token\n");
@@ -1620,6 +1821,9 @@ done:
         OPENSSL_cleanse(data, data_len);
         free(data);
     }
+#ifdef WRAPFORMAT
+    if (formatmac) free(formatmac);
+#endif
     if (ctx != NULL) {
         decr_mgr_cleanup(tokdata, sess, ctx);
         free(ctx);
