@@ -676,9 +676,9 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
 
     // BCFS-FIX: defines sticky attributes for secret keys
     if (class == CKO_SECRET_KEY)
-        rc = secret_key_validate_sticky_attributes(obj->template, new_tmpl, class, subclass);
+        rc = secret_key_validate_sticky_attributes(tokdata, obj->template, new_tmpl, class, subclass);
     else
-        rc = template_validate_attributes(new_tmpl, class, subclass, MODE_MODIFY);
+        rc = template_validate_attributes(tokdata, new_tmpl, class, subclass, MODE_MODIFY);
 
 #else
 
@@ -717,7 +717,7 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
         rc = secret_key_check_conflicts( obj->template );
         if (rc != CKR_OK)
         {
-       OCK_LOG_ERR(ERR_CONFLICT_ATT);
+       TRACE_ERROR("ERR_CONFLICT_ATT\n");
         return rc;
         }
     }

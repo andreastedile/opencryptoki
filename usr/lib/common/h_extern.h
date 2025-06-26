@@ -2667,6 +2667,14 @@ CK_RV secret_key_unwrap(STDLL_TokData_t *tokdata, TEMPLATE *tmpl,
                         CK_BBOOL fromend);
 CK_RV secret_key_validate_attribute(STDLL_TokData_t *tokdata, TEMPLATE *tmpl,
                                     CK_ATTRIBUTE *attr, CK_ULONG mode);
+#ifdef CONFLICTCHECK
+CK_RV secret_key_check_conflicts(TEMPLATE *tmpl);
+#endif
+#ifdef STICKYATTRIBUTES
+CK_RV secret_key_validate_sticky_attributes(STDLL_TokData_t *tokdata,
+                        TEMPLATE *curr, TEMPLATE *new,
+                        CK_ULONG class, CK_ULONG subclass);
+#endif
 
 // rsa routines
 //

@@ -1955,7 +1955,7 @@ secret_key_check_conflicts( TEMPLATE *tmpl )
 		found = template_attribute_find( tmpl, *((CK_ATTRIBUTE_TYPE *)ca->data), &ta );
 		if (found && (*(CK_BBOOL *)ta->pValue == TRUE))
 		{
-		    OCK_LOG_ERR(ERR_CONFLICT_ATT);
+		    TRACE_ERROR("%s\n", ock_err(ERR_TEMPLATE_INCONSISTENT));
 		    return CKR_TEMPLATE_INCONSISTENT;
 		}
 
@@ -2029,7 +2029,7 @@ sticky( TEMPLATE *curr, CK_ATTRIBUTE *attr, CK_BBOOL sticky_mode )
     // What's the right error to get back?
     if (!attr)
     {
-	OCK_LOG_ERR(ERR_ATTRIBUTE_READ_ONLY);
+    TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_READ_ONLY));
 	return CKR_ATTRIBUTE_READ_ONLY;
     }
 
@@ -2038,14 +2038,14 @@ sticky( TEMPLATE *curr, CK_ATTRIBUTE *attr, CK_BBOOL sticky_mode )
     CK_RV found = template_attribute_find( curr, attr->type, &curr_attr );
     if (!found)
     {
-	OCK_LOG_ERR(ERR_ATTRIBUTE_READ_ONLY);
+    TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_READ_ONLY));
 	return CKR_ATTRIBUTE_READ_ONLY;
     }
 
     CK_BBOOL curr_value = *(CK_BBOOL *)curr_attr->pValue;
     if (curr_value == sticky_mode && wanted_value != sticky_mode)
     {
-	OCK_LOG_ERR(ERR_STICKY_MOD);
+    // TRACE_ERROR("ERR_STICKY_MOD\n");
 	return CKR_ATTRIBUTE_READ_ONLY;
     }
 
@@ -2062,7 +2062,8 @@ secret_key_validate_sticky_attribute( TEMPLATE *curr, CK_ATTRIBUTE *attr)
 }
 
 CK_RV
-secret_key_validate_sticky_attributes( TEMPLATE *curr,
+secret_key_validate_sticky_attributes( STDLL_TokData_t *tokdata,
+                                       TEMPLATE *curr,
                                        TEMPLATE *new,
                                        CK_ULONG class,
                                        CK_ULONG subclass)
@@ -2076,7 +2077,7 @@ secret_key_validate_sticky_attributes( TEMPLATE *curr,
 	if (is_sticky(attr->type))
 	    rc = secret_key_validate_sticky_attribute(curr, attr);
 	else
-	    rc = template_validate_attribute(new, attr, class, subclass, MODE_MODIFY);
+	    rc = template_validate_attribute(tokdata, new, attr, class, subclass, MODE_MODIFY);
 
 	if (rc != CKR_OK)
 	    return rc;

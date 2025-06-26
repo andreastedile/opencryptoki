@@ -860,7 +860,7 @@ encode_wrap_format( TEMPLATE *tmpl, CK_BYTE *format)
 }
 
 CK_RV
-wrap_format(CK_BYTE *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK_ULONG wrapped_key_len)
+wrap_format(STDLL_TokData_t *tokdata, OBJECT *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK_ULONG wrapped_key_len)
 {
     CK_BYTE   * formatme  = NULL;
     CK_BYTE   * mackey    = NULL;
@@ -876,21 +876,21 @@ wrap_format(CK_BYTE *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK
     mackey =  (CK_BYTE *) malloc(len);
     iv0 = (CK_BYTE *) malloc(8);
     if (!mackey || !iv0){
-	OCK_LOG_ERR(ERR_HOST_MEMORY);
+    TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
 	return CKR_HOST_MEMORY;
     }
     bzero(iv0, 8);
     keylen = len;
-    //rc = ckm_des_cbc_encrypt(iv0, 8, mackey, &keylen, iv0, attr->pValue);
-    rc = ckm_des_ecb_encrypt(iv0, 8, mackey, &keylen, key);
+    //rc = ckm_des_cbc_encrypt(tokdata, iv0, 8, mackey, &keylen, iv0, attr->pValue);
+    rc = ckm_des_ecb_encrypt(tokdata, iv0, 8, mackey, &keylen, key); // see commit 14356138
     if (rc != CKR_OK){
-	OCK_LOG_ERR(ERR_DES_ECB_ENCRYPT);
+    TRACE_ERROR("ERR_DES_ECB_ENCRYPT\n");
 	return rc;
     }
 
     formatme = (CK_BYTE *) malloc(wrapped_key_len);
     if (!formatme){
-	OCK_LOG_ERR(ERR_HOST_MEMORY);
+    TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
 	return CKR_HOST_MEMORY;
     }
     bzero(formatme, wrapped_key_len);
@@ -899,7 +899,29 @@ wrap_format(CK_BYTE *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK
     encode_wrap_format(tmpl, formatme + wrapped_key_len - 1);
     memcpy(wrapped_key + len, formatme + len, len);
     keylen = len;
-    rc = ckm_des_cbc_encrypt(formatme, len,  wrapped_key + keylen, &keylen, iv0, mackey);
+
+    OBJECT* mackey_obj;
+    CK_OBJECT_CLASS keyClass = CKO_SECRET_KEY;
+    CK_KEY_TYPE keyType = CKK_DES;
+    CK_BBOOL true = TRUE;
+    CK_BBOOL false = FALSE;
+
+    CK_ATTRIBUTE keyTemplate[] = {
+        {CKA_CLASS, &keyClass, sizeof(keyClass)},
+        {CKA_KEY_TYPE, &keyType, sizeof(keyType)},
+        {CKA_ENCRYPT, &true, sizeof(true)},
+        {CKA_TOKEN, &false, sizeof(false)},
+        {CKA_VALUE, mackey, sizeof(mackey)}
+    };
+    CK_ULONG nattr = sizeof(keyTemplate) / sizeof(CK_ATTRIBUTE);
+
+    rc = object_create(tokdata, keyTemplate, nattr, &mackey_obj);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("object_create failed\n");
+        return rc;
+    }
+
+    rc = ckm_des_cbc_encrypt(tokdata, formatme, len,  wrapped_key + keylen, &keylen, iv0, mackey_obj); // see commit 14356138
     a = (int *) (wrapped_key + len);
     b = (int *) (formatme + len);
     for(i = 0; i < len; i+= sizeof(int)){
@@ -908,7 +930,7 @@ wrap_format(CK_BYTE *key, CK_ULONG len, TEMPLATE *tmpl, CK_BYTE *wrapped_key, CK
 	b++;
     }
     memcpy(iv0, wrapped_key + len, len);
-    return ckm_des_cbc_encrypt(formatme + len, len, wrapped_key + len, &keylen, iv0, mackey);
+    return ckm_des_cbc_encrypt(tokdata, formatme + len, len, wrapped_key + len, &keylen, iv0, mackey_obj); // see commit 14356138
 }
 
 #endif
@@ -929,7 +951,8 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     OBJECT *wrapping_key_obj = NULL;
     OBJECT *key_obj = NULL;
 #ifdef WRAPFORMAT
-    OBJECT            * master    = NULL;
+    CK_ATTRIBUTE *attr = NULL;
+    OBJECT            * master    = NULL; // see commit 3e29bcd0
 #endif
     CK_BYTE *data = NULL;
 #ifdef WRAPFORMAT
@@ -1319,7 +1342,7 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     // prepare to do the encryption
     //
     /* Policy already checked */
-    rc = encr_mgr_init(tokdata, sess, ctx, OP_WRAP, mech, h_wrapping_key,
+    rc = encr_mgr_init(tokdata, sess, ctx, OP_WRAP, mech, h_wrapping_key, // ctx->key = key_handle; // ct->key = h_wrapping_key
                        FALSE);
     if (rc != CKR_OK) {
         TRACE_DEVEL("encr_mgr_init failed.\n");
@@ -1347,19 +1370,19 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     case CKM_DES_CBC_PAD:
         *wrapped_key_len = *wrapped_key_len * 2;
         if (! length_only) {
-            rc = object_mgr_find_in_map1( ctx->key, &master );
+            rc = object_mgr_find_in_map1(tokdata, ctx->key, &master, READ_LOCK);
             if (rc != CKR_OK){
-                OCK_LOG_ERR(ERR_OBJMGR_FIND_MAP);
+                TRACE_ERROR("ERR_OBJMGR_FIND_MAP\n");
                 return rc;
             }
             rc = template_attribute_find( master->template, CKA_VALUE, &attr );
             if (rc == FALSE){
-                OCK_LOG_ERR(ERR_ATTRIBUTE_VALUE_INVALID);
+                TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_VALUE_INVALID));
                 return CKR_FUNCTION_FAILED;
             }
 
             // SISTEMATE POINTER! (wrapped_key)
-            rc = wrap_format(attr->pValue, attr->ulValueLen, key2_obj->template, wrapped_key, *wrapped_key_len);
+            rc = wrap_format(tokdata, master, attr->ulValueLen, key_obj->template, wrapped_key, *wrapped_key_len);
             if (rc != CKR_OK)
                 return rc;
             // free(wrapped_key);
@@ -1621,36 +1644,36 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
     case CKM_DES_CBC:
     case CKM_DES_CBC_PAD:
         //data_len = data_len / 2;
-        rc = object_mgr_find_in_map1( h_unwrapping_key, &master );
+        rc = object_mgr_find_in_map1( tokdata, h_unwrapping_key, &master, READ_LOCK );
         if (rc != CKR_OK){
-            OCK_LOG_ERR(ERR_OBJMGR_FIND_MAP);
-            goto error;
+            TRACE_ERROR("ERR_OBJMGR_FIND_MAP\n");
+            goto done;
         }
         rc = template_attribute_find( master->template, CKA_VALUE, &attr );
         if (rc == FALSE){
-            OCK_LOG_ERR(ERR_FUNCTION_FAILED);
+            TRACE_ERROR("%s\n", ock_err(ERR_FUNCTION_FAILED));
             rc = CKR_FUNCTION_FAILED;
-            goto error;
+            goto done;
         }
 
         formatmac = (CK_BYTE *) malloc(wrapped_key_len * 2);
         if (!formatmac){
-            OCK_LOG_ERR(ERR_HOST_MEMORY);
+            TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
             rc = CKR_HOST_MEMORY;
-            goto error;
+            goto done;
         }
         memcpy(formatmac, wrapped_key, wrapped_key_len * 2);
 
-        rc = wrap_format(attr->pValue, attr->ulValueLen, key_obj->template, formatmac, wrapped_key_len * 2);
+        rc = wrap_format(tokdata, attr->pValue, attr->ulValueLen, key_obj->template, formatmac, wrapped_key_len * 2);
         if (rc != CKR_OK)
             return rc;
         f = (int *) formatmac;
         w = (int *) wrapped_key;
         for(b = 0; b < (wrapped_key_len * 2); b+= sizeof(int)){
             if (*f != *w){
-                OCK_LOG_ERR(ERR_TEMPLATE_INCONSISTENT);
+                TRACE_ERROR("%s\n", ock_err(ERR_TEMPLATE_INCONSISTENT));
                 rc = CKR_TEMPLATE_INCONSISTENT;
-                goto error;
+                goto done;
             }
             f++;
             w++;
