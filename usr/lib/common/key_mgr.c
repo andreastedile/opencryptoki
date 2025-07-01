@@ -951,13 +951,9 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     OBJECT *wrapping_key_obj = NULL;
     OBJECT *key_obj = NULL;
 #ifdef WRAPFORMAT
-    CK_ATTRIBUTE *attr = NULL;
-    OBJECT            * master    = NULL; // see commit 3e29bcd0
+    CK_ULONG wrapping_key_len;
 #endif
     CK_BYTE *data = NULL;
-#ifdef WRAPFORMAT
-    CK_BYTE           * formatmac  = NULL;
-#endif
     CK_ULONG data_len;
     CK_OBJECT_CLASS class;
     CK_KEY_TYPE keytype;
@@ -985,6 +981,14 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
             rc = CKR_KEY_HANDLE_INVALID;
         goto done;
     }
+
+#ifdef WRAPFORMAT
+    rc = template_attribute_get_ulong(wrapping_key_obj->template, CKA_VALUE_LEN, &wrapping_key_len);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_VALUE_LEN in the wrapping key template.\n");
+        goto done;
+    }
+#endif
 
     rc = tokdata->policy->is_mech_allowed(tokdata->policy, mech,
                                           &wrapping_key_obj->strength,
@@ -1370,32 +1374,14 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     case CKM_DES_CBC_PAD:
         *wrapped_key_len = *wrapped_key_len * 2;
         if (! length_only) {
-            rc = object_mgr_find_in_map1(tokdata, ctx->key, &master, READ_LOCK);
-            if (rc != CKR_OK){
-                TRACE_ERROR("ERR_OBJMGR_FIND_MAP\n");
-                goto error;
-            }
-            rc = template_attribute_find( master->template, CKA_VALUE, &attr );
-            if (rc == FALSE){
-                TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_VALUE_INVALID));
-                rc = CKR_FUNCTION_FAILED;
-                goto error;
-            }
-
             // SISTEMATE POINTER! (wrapped_key)
-            rc = wrap_format(tokdata, master, attr->ulValueLen, key_obj->template, wrapped_key, *wrapped_key_len);
-            if (rc != CKR_OK)
-                goto error;
+            rc = wrap_format(tokdata, wrapping_key_obj, wrapping_key_len, key_obj->template, wrapped_key, *wrapped_key_len);
             // free(wrapped_key);
             // wrapped_key = formatmac;
             // *wrapped_key_len = *wrapped_key_len * 2;
         }
     }
 #endif
-
-error:
-    if (attr != NULL)
-        object_put(tokdata, master, TRUE);
 
     encr_mgr_cleanup(tokdata, sess, ctx);
     free(ctx);
@@ -1433,13 +1419,10 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
 {
     ENCR_DECR_CONTEXT *ctx = NULL;
     OBJECT *key_obj = NULL, *unwrapping_key_obj = NULL;
-#ifdef WRAPFORMAT
-    OBJECT            * master    = NULL;
-#endif
     CK_BYTE *data = NULL;
 #ifdef WRAPFORMAT
+    CK_ULONG unwrapping_key_len;
     CK_BYTE           * formatmac  = NULL;
-    CK_ATTRIBUTE      * attr       = NULL;
     int b,*f,*w;
 #endif
     CK_ULONG data_len, value_len = 0;
@@ -1474,6 +1457,14 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
             rc = CKR_UNWRAPPING_KEY_HANDLE_INVALID;
         goto done;
     }
+
+#ifdef WRAPFORMAT
+    rc = template_attribute_get_ulong(unwrapping_key_obj->template, CKA_VALUE_LEN, &unwrapping_key_len);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_VALUE_LEN in the wrapping key template.\n");
+        goto done;
+    }
+#endif
 
     rc = tokdata->policy->is_mech_allowed(tokdata->policy, mech,
                                           &unwrapping_key_obj->strength,
@@ -1649,17 +1640,6 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
     case CKM_DES_CBC:
     case CKM_DES_CBC_PAD:
         //data_len = data_len / 2;
-        rc = object_mgr_find_in_map1( tokdata, h_unwrapping_key, &master, READ_LOCK );
-        if (rc != CKR_OK){
-            TRACE_ERROR("ERR_OBJMGR_FIND_MAP\n");
-            goto done;
-        }
-        rc = template_attribute_find( master->template, CKA_VALUE, &attr );
-        if (rc == FALSE){
-            TRACE_ERROR("%s\n", ock_err(ERR_FUNCTION_FAILED));
-            rc = CKR_FUNCTION_FAILED;
-            goto done;
-        }
 
         formatmac = (CK_BYTE *) malloc(wrapped_key_len * 2);
         if (!formatmac){
@@ -1669,7 +1649,7 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
         }
         memcpy(formatmac, wrapped_key, wrapped_key_len * 2);
 
-        rc = wrap_format(tokdata, attr->pValue, attr->ulValueLen, key_obj->template, formatmac, wrapped_key_len * 2);
+        rc = wrap_format(tokdata, unwrapping_key_obj, unwrapping_key_len, key_obj->template, formatmac, wrapped_key_len * 2);
         if (rc != CKR_OK)
             goto done;
         f = (int *) formatmac;
@@ -1851,7 +1831,6 @@ done:
     }
 #ifdef WRAPFORMAT
     if (formatmac) free(formatmac);
-    if (master != NULL) object_put(tokdata, master, TRUE);
 #endif
     if (ctx != NULL) {
         decr_mgr_cleanup(tokdata, sess, ctx);
