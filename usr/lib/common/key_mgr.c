@@ -1373,24 +1373,29 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
             rc = object_mgr_find_in_map1(tokdata, ctx->key, &master, READ_LOCK);
             if (rc != CKR_OK){
                 TRACE_ERROR("ERR_OBJMGR_FIND_MAP\n");
-                return rc;
+                goto error;
             }
             rc = template_attribute_find( master->template, CKA_VALUE, &attr );
             if (rc == FALSE){
                 TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_VALUE_INVALID));
-                return CKR_FUNCTION_FAILED;
+                rc = CKR_FUNCTION_FAILED;
+                goto error;
             }
 
             // SISTEMATE POINTER! (wrapped_key)
             rc = wrap_format(tokdata, master, attr->ulValueLen, key_obj->template, wrapped_key, *wrapped_key_len);
             if (rc != CKR_OK)
-                return rc;
+                goto error;
             // free(wrapped_key);
             // wrapped_key = formatmac;
             // *wrapped_key_len = *wrapped_key_len * 2;
         }
     }
 #endif
+
+error:
+    if (attr != NULL)
+        object_put(tokdata, master, TRUE);
 
     encr_mgr_cleanup(tokdata, sess, ctx);
     free(ctx);
@@ -1666,7 +1671,7 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
 
         rc = wrap_format(tokdata, attr->pValue, attr->ulValueLen, key_obj->template, formatmac, wrapped_key_len * 2);
         if (rc != CKR_OK)
-            return rc;
+            goto done;
         f = (int *) formatmac;
         w = (int *) wrapped_key;
         for(b = 0; b < (wrapped_key_len * 2); b+= sizeof(int)){
@@ -1846,6 +1851,7 @@ done:
     }
 #ifdef WRAPFORMAT
     if (formatmac) free(formatmac);
+    if (master != NULL) object_put(tokdata, master, TRUE);
 #endif
     if (ctx != NULL) {
         decr_mgr_cleanup(tokdata, sess, ctx);
