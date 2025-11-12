@@ -859,8 +859,21 @@ object_set_attribute_values( OBJECT        * obj,
    // for validity because some attributes are added internally and are not
    // allowed to be specified by the user (ie. CKA_LOCAL for key types) but
    // may still be part of the old template.
-   //
-   rc = template_validate_attributes( new_tmpl, class, subclass, MODE_MODIFY );
+
+#ifdef STICKYATTRIBUTES 
+
+   // BCFS-FIX: defines sticky attributes for secret keys
+   if (class == CKO_SECRET_KEY)
+      rc = secret_key_validate_sticky_attributes(obj->template, new_tmpl, class, subclass);
+   else
+      rc = template_validate_attributes(new_tmpl, class, subclass, MODE_MODIFY);
+
+#else
+
+      rc = template_validate_attributes(new_tmpl, class, subclass, MODE_MODIFY);
+
+#endif
+
    if (rc != CKR_OK){
       OCK_LOG_ERR(ERR_ATTR_VALIDATE); 
       goto error;
@@ -873,6 +886,22 @@ object_set_attribute_values( OBJECT        * obj,
       OCK_LOG_ERR(ERR_TEMPLATE_MERGE); 
       return rc;
    }
+
+#ifdef CONFLICTCHECK
+
+   //BCFS-FIX: Checks for conflicting attributes
+ 
+   if (class == CKO_SECRET_KEY){
+       rc = secret_key_check_conflicts( obj->template );
+       if (rc != CKR_OK)
+       {
+      OCK_LOG_ERR(ERR_CONFLICT_ATT);
+	   return rc;
+       }
+   }
+
+#endif
+
    return CKR_OK;
 
 error:
@@ -1028,6 +1057,19 @@ object_create_skel( CK_ATTRIBUTE  * pTemplate,
       OCK_LOG_ERR(ERR_TEMPLATE_MERGE); 
       goto done;
    }
+
+#ifdef CONFLICTCHECK
+
+   //BCFS-FIX: Checks for conflicting attributes
+ 
+   if (class == CKO_SECRET_KEY){
+       rc = secret_key_check_conflicts( tmpl );
+       if (rc != CKR_OK)
+	   goto done;
+   }
+
+#endif
+
    // at this point, we should have a valid object with correct attributes
    //
    o->template = tmpl;

@@ -332,7 +332,9 @@ pthread_mutex_t  nextmutex = PTHREAD_MUTEX_INITIALIZER;
 unsigned int  rnginitialized=0;
 
 CK_CHAR manuf[] = "IBM Corp.";
-CK_CHAR model[] = "IBM SoftTok ";
+// BCFS-FIX
+CK_CHAR model[] = "OpencryptokiX";
+///////////////
 CK_CHAR descr[] = "IBM PKCS#11 Soft token";
 CK_CHAR label[] = "IBM OS PKCS#11   ";
 
