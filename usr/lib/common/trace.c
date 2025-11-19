@@ -126,6 +126,9 @@ static const char *ock_err_msg[] = {
     "API already Initialized",  /*ERR_CRYPTOKI_ALREADY_INITIALIZED */
     "Mutex Invalid",            /*ERR_MUTEX_BAD */
     "Mutex was not locked",     /*ERR_MUTEX_NOT_LOCKED */
+#ifdef CONFLICTCHECK
+    "Conflicting attribute",    /* ERR_CONFLICTING_ATTRIBUTE */
+#endif
     "Unknown error",            /*ERR_MAX */
 };
 

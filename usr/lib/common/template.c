@@ -25,6 +25,10 @@
  *    template_validate_attribute
  *    template_validate_attributes
  *    template_validate_base_attribute
+ *    template_check_conflicts_for_attribute
+ *    template_check_conflicting_attributes
+ *    template_check_sticky_attribute
+ *    template_validate_sticky_attributes
  */
 
 #include <pthread.h>
@@ -2009,5 +2013,252 @@ void dump_template(TEMPLATE *tmpl)
 	TRACE_DEBUG_DUMPATTR(a);
         node = node->next;
     }
+}
+#endif
+
+#ifdef CONFLICTCHECK
+DL_NODE* get_conflicting_attributes(CK_ATTRIBUTE_TYPE attribute)
+{
+    DL_NODE *node = NULL;
+    CK_ATTRIBUTE_TYPE type;
+    switch (attribute)
+    {
+        case CKA_DECRYPT:
+            type = CKA_WRAP;
+            node = dlist_add_as_first(node, &type);
+            break;
+        case CKA_WRAP:
+            type = CKA_DECRYPT;
+            node = dlist_add_as_first(node, &type);
+            break;
+        case CKA_ENCRYPT:
+            type = CKA_UNWRAP;
+            node = dlist_add_as_first(node, &type);
+            break;
+        case CKA_UNWRAP:
+            type = CKA_ENCRYPT;
+            node = dlist_add_as_first(node, &type);
+            break;
+    }
+    return node;
+}
+
+/* template_check_conflicts_for_attribute() */
+CK_RV template_check_conflicts_for_attribute(CK_ATTRIBUTE_TYPE attr, TEMPLATE *tmpl) {
+    DL_NODE *conflicts = NULL;
+    DL_NODE *conflict = NULL;
+    CK_RV rc;
+    
+    conflicts = get_conflicting_attributes(attr);
+    conflict = conflicts;
+    while (conflict != NULL) {
+        CK_ATTRIBUTE_TYPE type = *((CK_ATTRIBUTE_TYPE *)conflict->data);
+        CK_BOOL value;
+        rc = template_attribute_get_bool(tmpl, type, &value);
+        if (rc != CKR_OK) {
+            TRACE_DEVEL("Failed to find attribute in key template\n");
+            break;
+        }
+        if (value == TRUE) {
+            TRACE_ERROR("%s\n", ock_err(ERR_CONFLICTING_ATTRIBUTE));
+            rc = CKR_TEMPLATE_INCONSISTENT;
+            break;
+        }
+        conflict = conflict->next;
+    }
+
+    if (conflicts)
+        dlist_purge(conflicts);
+
+    return rc;
+}
+
+/* template_check_conflicting_attributes()
+ *
+ * if class is not CKO_PUBLIC_KEY or CKO_SECRET_KEY, returns CKR_OK.
+ * otherwise, calls template_check_conflicts_for_attribute for attributes
+ * CKA_WRAP, CKA_UNWRAP, CKA_ENCRYPT and CKA_DECRYPT if the attribute is true.
+ */
+CK_RV template_check_conflicting_attributes(TEMPLATE *tmpl, CK_ULONG class)
+{
+    CK_RV rc;
+    CK_BBOOL value;
+
+    if (class != CKO_PUBLIC_KEY && class != CKO_SECRET_KEY) {
+        return CKR_OK;
+    }
+
+    rc = template_attribute_get_bool(tmpl, CKA_WRAP, &value);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_attribute_get_bool failed\n");
+        return rc;
+    }
+    if (value == TRUE) {
+        rc = template_check_conflicts_for_attribute(CKA_WRAP, tmpl);
+        if (rc != CKR_OK) {
+            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+            return rc;
+        }
+    }
+
+    rc = template_attribute_get_bool(tmpl, CKA_UNWRAP, &value);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_attribute_get_bool failed\n");
+        return rc;
+    }
+    if (value == TRUE) {
+        rc = template_check_conflicts_for_attribute(CKA_UNWRAP, tmpl);
+        if (rc != CKR_OK) {
+            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+            return rc;
+        }
+    }
+    
+    rc = template_attribute_get_bool(tmpl, CKA_ENCRYPT, &value);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_attribute_get_bool failed\n");
+        return rc;
+    }
+    if (value == TRUE) {
+        rc = template_check_conflicts_for_attribute(CKA_ENCRYPT, tmpl);
+        if (rc != CKR_OK) {
+            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+            return rc;
+        }
+    }
+
+    rc = template_attribute_get_bool(tmpl, CKA_DECRYPT, &value);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_attribute_get_bool failed\n");
+        return rc;
+    }
+    if (value == TRUE) {
+        rc = template_check_conflicts_for_attribute(CKA_DECRYPT, tmpl);
+        if (rc != CKR_OK) {
+            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+            return rc;
+        }
+    }
+
+    return CKR_OK;
+}
+#endif
+
+#ifdef STICKYATTRIBUTES
+typedef enum {
+    sticky_on = 0,
+    sticky_off = 1,
+    sticky_both = 2,
+} sticky_mode;
+
+sticky_mode get_sticky_mode(CK_ATTRIBUTE_TYPE type)
+{
+    switch (type) {
+    case CKA_WRAP:
+	case CKA_UNWRAP:
+	case CKA_ENCRYPT:
+	case CKA_DECRYPT:
+	case CKA_SIGN:
+	case CKA_VERIFY:
+	case CKA_SENSITIVE:
+	    return sticky_on;
+	case CKA_EXTRACTABLE:
+	    return sticky_off;
+    default:
+        return sticky_both;
+    }
+}
+
+CK_BOOL attribute_is_sticky(CK_ATTRIBUTE_PTR attr)
+{
+    switch (attr->type) {
+	case CKA_ENCRYPT:
+	case CKA_DECRYPT:
+	case CKA_SIGN:
+	case CKA_VERIFY:
+	case CKA_WRAP:
+	case CKA_UNWRAP:
+	case CKA_SENSITIVE:
+	case CKA_EXTRACTABLE:
+	case CKA_ALWAYS_SENSITIVE:
+	case CKA_NEVER_EXTRACTABLE:
+	    return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+/* template_check_sticky_attribute()
+ * 
+ * assumes that the value of attr is boolean.
+ * 
+ * - sticky on: once the value of an attribute is true, it cannot become false.
+ * - sticky off: once the value of an attribute is false, it cannot become true.
+*/
+CK_RV template_check_sticky_attribute(TEMPLATE *curr, CK_ATTRIBUTE *attr)
+{
+    CK_RV rc;
+
+    // current value of the attribute in the the template
+    CK_BBOOL curr_value;
+    rc = template_attribute_get_bool(curr, attr->type, &curr_value);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Could not find attribute in the template\n");
+        return rc;
+    }
+    
+    // new value of the attribute
+    CK_BBOOL new_value = *(CK_BBOOL *)attr->pValue;
+
+    sticky_mode mode = get_sticky_mode(attr->type);
+
+    switch (mode) {
+    case sticky_on:
+        if (curr_value == TRUE && new_value == FALSE) {
+            TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_READ_ONLY));
+            return CKR_ATTRIBUTE_READ_ONLY;
+        }
+        break;
+    case sticky_off:
+        if (curr_value == FALSE && new_value == TRUE) {
+            TRACE_ERROR("%s\n", ock_err(ERR_ATTRIBUTE_READ_ONLY));
+            return CKR_ATTRIBUTE_READ_ONLY;
+        }
+        break;
+    case sticky_both:
+        break;
+    }
+
+    return CKR_OK;
+}
+
+/* template_validate_sticky_attributes()
+ *
+ * if class is not CKO_PUBLIC_KEY or CKO_SECRET_KEY, returns CKR_OK.
+ * otherwise, calls template_check_sticky_attribute for each sticky attribute.
+*/
+CK_RV template_check_sticky_attributes(TEMPLATE *curr, TEMPLATE *new,
+                                          CK_ULONG class)
+{
+    if (class != CKO_PUBLIC_KEY && class != CKO_SECRET_KEY) {
+        return CKR_OK;
+    }
+
+    DL_NODE *node = new->attribute_list;
+    while (node != NULL) {
+        CK_ATTRIBUTE *attr = (CK_ATTRIBUTE *) node->data;
+        CK_BBOOL is_sticky = attribute_is_sticky(attr);
+        if (is_sticky) {
+            CK_RV rc = template_check_sticky_attribute(curr, attr);
+            if (rc != CKR_OK) {
+                TRACE_DEVEL("validate_sticky_attribute failed.\n");
+                return rc;
+            }
+        }
+        
+        node = node->next;
+    }
+
+    return CKR_OK;
 }
 #endif

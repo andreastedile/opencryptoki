@@ -1524,7 +1524,12 @@ CK_RV secret_key_set_default_attributes(TEMPLATE *tmpl, CK_ULONG mode)
     sensitive_attr->type = CKA_SENSITIVE;
     sensitive_attr->ulValueLen = sizeof(CK_BBOOL);
     sensitive_attr->pValue = (CK_BYTE *) sensitive_attr + sizeof(CK_ATTRIBUTE);
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: set SENSITIVE by default
+    *(CK_BBOOL *) sensitive_attr->pValue = TRUE;
+#else
     *(CK_BBOOL *) sensitive_attr->pValue = FALSE;
+#endif
 
     encrypt_attr->type = CKA_ENCRYPT;
     encrypt_attr->ulValueLen = sizeof(CK_BBOOL);
@@ -1549,12 +1554,22 @@ CK_RV secret_key_set_default_attributes(TEMPLATE *tmpl, CK_ULONG mode)
     wrap_attr->type = CKA_WRAP;
     wrap_attr->ulValueLen = sizeof(CK_BBOOL);
     wrap_attr->pValue = (CK_BYTE *) wrap_attr + sizeof(CK_ATTRIBUTE);
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: WRAP is in conflict with DECRYPT
+    *(CK_BBOOL *) wrap_attr->pValue = FALSE;
+#else
     *(CK_BBOOL *) wrap_attr->pValue = TRUE;
+#endif
 
     unwrap_attr->type = CKA_UNWRAP;
     unwrap_attr->ulValueLen = sizeof(CK_BBOOL);
     unwrap_attr->pValue = (CK_BYTE *) unwrap_attr + sizeof(CK_ATTRIBUTE);
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: UNWRAP is in conflict with ENCRYPT
+    *(CK_BBOOL *) unwrap_attr->pValue = FALSE;
+#else
     *(CK_BBOOL *) unwrap_attr->pValue = TRUE;
+#endif
 
     extractable_attr->type = CKA_EXTRACTABLE;
     extractable_attr->ulValueLen = sizeof(CK_BBOOL);
@@ -1812,16 +1827,28 @@ CK_RV secret_key_unwrap(STDLL_TokData_t *tokdata,
         TRACE_DEVEL("build attribute failed\n");
         goto cleanup;
     }
+    // BCFS-FIX: ALWAYS_SENSITIVE is set to FALSE because we don't know
+    // where we got the key from and its real sensitive-ness.
     rc = build_attribute(CKA_ALWAYS_SENSITIVE, &false, 1, &always_sens);
     if (rc != CKR_OK) {
         TRACE_DEVEL("build attribute failed\n");
         goto cleanup;
     }
+#ifdef CONFLICTCHECK
+    // BCFS-FIX: SENSITIVE is set to TRUE to avoid easy attacks
+    // where the attacker just wraps and unwraps a key and has it in clear.
+    rc = build_attribute(CKA_SENSITIVE, &true, 1, &sensitive);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("build_attribute failed\n");
+        goto cleanup;
+    }
+#else
     rc = build_attribute(CKA_SENSITIVE, &false, 1, &sensitive);
     if (rc != CKR_OK) {
         TRACE_DEVEL("build_attribute failed\n");
         goto cleanup;
     }
+#endif
     rc = build_attribute(CKA_EXTRACTABLE, &true, 1, &extractable);
     if (rc != CKR_OK) {
         TRACE_DEVEL("build_attribute failed\n");

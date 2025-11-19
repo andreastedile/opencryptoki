@@ -2608,6 +2608,18 @@ CK_RV template_validate_attributes(STDLL_TokData_t *tokdata,
 
 CK_RV template_validate_base_attribute(TEMPLATE *tmpl,
                                        CK_ATTRIBUTE *attr, CK_ULONG mode);
+
+#ifdef CONFLICTCHECK
+CK_RV template_check_conflicts_for_attribute(CK_ATTRIBUTE_TYPE attr, TEMPLATE *tmpl);
+CK_RV template_check_conflicting_attributes(TEMPLATE *tmpl, CK_ULONG class);
+#endif
+
+#ifdef STICKYATTRIBUTES
+CK_RV template_check_sticky_attribute(TEMPLATE *curr, CK_ATTRIBUTE *attr);
+CK_RV template_check_sticky_attributes(TEMPLATE *curr, TEMPLATE *new,
+                                          CK_ULONG class);
+#endif
+
 #ifdef DEBUG
 void dump_template(TEMPLATE *tmpl);
 #define TRACE_DEBUG_DUMPTEMPL(x) dump_template(x)

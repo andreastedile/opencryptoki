@@ -42,6 +42,15 @@
 
 #include <openssl/crypto.h>
 
+#ifdef WRAPFORMAT
+#define ENCODE_SENSITIVE 0x000000001
+#define ENCODE_ALWAYS_SENSITIVE (0x00000001 << 1)
+#define ENCODE_WRAP (0x00000001 << 2)
+#define ENCODE_UNWRAP (0x00000001 << 3)
+#define ENCODE_ENCRYPT (0x00000001 << 4)
+#define ENCODE_DECRYPT (0x00000001 << 5)
+#endif
+
 static CK_BBOOL true = TRUE;
 
 CK_RV key_mgr_apply_always_sensitive_never_extractable_attrs(
@@ -838,6 +847,78 @@ error:
 }
 
 
+#ifdef WRAPFORMAT
+CK_RV encode_attributes(TEMPLATE *tmpl, CK_BYTE *format) {
+    CK_BBOOL flag;
+    CK_RV rc;
+    
+    if (!tmpl || !format) {
+        TRACE_ERROR("%s received bad argument(s)\n", __func__);
+        return CKR_FUNCTION_FAILED;
+    }
+
+    memset(format, 0x0, 1);
+
+    rc = template_attribute_get_bool(tmpl, CKA_ENCRYPT, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_ENCRYPT in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_ENCRYPT;
+    
+    rc = template_attribute_get_bool(tmpl, CKA_DECRYPT, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_DECRYPT in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_DECRYPT;
+    
+    rc = template_attribute_get_bool(tmpl, CKA_WRAP, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_WRAP in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_WRAP;
+    
+    rc = template_attribute_get_bool(tmpl, CKA_UNWRAP, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_UNWRAP in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_UNWRAP;
+    
+    rc = template_attribute_get_bool(tmpl, CKA_SENSITIVE, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_SENSITIVE in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_SENSITIVE;
+    
+    rc = template_attribute_get_bool(tmpl, CKA_ALWAYS_SENSITIVE, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_ALWAYS_SENSITIVE in key template.\n");
+        rc = CKR_KEY_NOT_WRAPPABLE;
+        goto done;
+    }
+    if (flag == TRUE)
+        *format |= (CK_BYTE) ENCODE_ALWAYS_SENSITIVE;    
+
+    rc = CKR_OK;
+done:
+    return rc;
+}
+#endif
+
 //
 //
 CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
@@ -857,6 +938,18 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     CK_OBJECT_CLASS class;
     CK_KEY_TYPE keytype;
     CK_BBOOL flag, not_opaque = FALSE;
+#ifdef WRAPFORMAT
+    CK_BBOOL ck_true = TRUE;
+    CK_BBOOL ck_false = FALSE;
+    CK_BYTE encoded_attributes;
+    CK_BBOOL cka_sign_changed = FALSE;
+    CK_MECHANISM sign_mech;
+    CK_BYTE *wrapped_key_and_encoded_attributes = NULL;
+    CK_ULONG wrapped_key_len_plus_one;
+    CK_BYTE *signature = NULL;
+    CK_ULONG signature_len;
+#endif
+
     CK_RV rc;
 
     if (!sess || !wrapped_key_len) {
@@ -1255,10 +1348,164 @@ CK_RV key_mgr_wrap_key(STDLL_TokData_t *tokdata,
     encr_mgr_cleanup(tokdata, sess, ctx);
     free(ctx);
 
+#ifdef WRAPFORMAT
+    // determine the MAC mechanism to be used and the corresponding signature length
+    //
+    switch (mech->mechanism) {
+    case CKM_DES_ECB:
+    case CKM_DES_CBC:
+    case CKM_DES_CBC_PAD:
+        signature_len = 4;
+        sign_mech.mechanism = CKM_DES_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_DES3_ECB:
+    case CKM_DES3_CBC:
+    case CKM_DES3_CBC_PAD:
+        signature_len = 4;
+        sign_mech.mechanism = CKM_DES3_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_AES_ECB:
+    case CKM_AES_CBC:
+    case CKM_AES_CBC_PAD:
+    case CKM_AES_CTR:
+    case CKM_AES_OFB:
+    case CKM_AES_CFB8:
+    case CKM_AES_CFB64:
+    case CKM_AES_CFB128:
+    case CKM_AES_XTS:
+    case CKM_AES_GCM:
+    case CKM_AES_KEY_WRAP:
+    case CKM_AES_KEY_WRAP_PAD:
+    case CKM_AES_KEY_WRAP_KWP:
+    case CKM_AES_KEY_WRAP_PKCS7:
+        // https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.1/os/pkcs11-spec-v3.1-os.html#_Toc111203484
+        signature_len = 8;
+        sign_mech.mechanism = CKM_AES_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_RSA_AES_KEY_WRAP:
+    case CKM_ECDH_AES_KEY_WRAP:
+    case CKM_RSA_PKCS_OAEP:
+    case CKM_RSA_PKCS:
+    case CKM_RSA_X_509:
+    default:
+        TRACE_ERROR("not yet implemented.\n");
+        rc = CKR_MECHANISM_INVALID;
+        goto error;
+    }
+
+    if (length_only == FALSE) {
+        rc = encode_attributes(key_obj->template, &encoded_attributes);
+        if (rc != CKR_OK) {
+            TRACE_ERROR("encode_attributes failed\n");
+            goto error;
+        }
+
+        // check if CKA_SIGN is CK_FALSE
+        //
+        rc = template_attribute_get_bool(wrapping_key_obj->template, CKA_SIGN, &flag);
+        if (rc != CKR_OK) {
+            TRACE_ERROR("Failed to find CKA_SIGN in wrapping key template.\n");
+            goto error;
+        }
+
+        // if CKA_SIGN is CK_FALSE, set it to CK_TRUE and record that it changed
+        //
+        if (!flag) {
+            rc = template_build_update_attribute(wrapping_key_obj->template, CKA_SIGN,
+                                                 &ck_true, sizeof(CK_BBOOL));
+            if (rc != CKR_OK) {
+                TRACE_ERROR("template_build_update_attribute failed\n");
+                goto error;
+            }
+            cka_sign_changed = TRUE;
+        }
+
+        // concatenate the wrapped key and the encoded attributes
+        //
+        wrapped_key_len_plus_one = *wrapped_key_len + 1;
+        wrapped_key_and_encoded_attributes = (CK_BYTE *) malloc(wrapped_key_len_plus_one);
+        if (!wrapped_key_and_encoded_attributes) {
+            TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+            rc = CKR_HOST_MEMORY;
+            goto error;
+        }
+        memcpy(wrapped_key_and_encoded_attributes,
+               wrapped_key, *wrapped_key_len);
+        memcpy(wrapped_key_and_encoded_attributes + *wrapped_key_len,
+               &encoded_attributes, 1);
+
+        // compute the signature and clean up
+        //
+        signature = (CK_BYTE *) malloc(signature_len);
+        if (!signature) {
+            TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+            rc = CKR_HOST_MEMORY;
+            goto error;
+        }
+        rc = sign_mgr_init(tokdata, sess, &sess->sign_ctx, &sign_mech, FALSE,
+                           h_wrapping_key, FALSE, FALSE);
+        if (rc != CKR_OK) {
+            TRACE_ERROR("sign_mgr_init failed\n");
+            goto error;
+        }
+        rc = sign_mgr_sign(tokdata, sess, FALSE, &sess->sign_ctx,
+                           wrapped_key_and_encoded_attributes, wrapped_key_len_plus_one,
+                           signature, &signature_len);
+        if (rc != CKR_OK) {
+            TRACE_ERROR("sign_mgr_sign failed\n");
+            goto error;
+        }
+        sign_mgr_cleanup(tokdata, sess, &sess->sign_ctx);
+
+        // append the signature to the wrapped key
+        //
+        memcpy(wrapped_key + *wrapped_key_len, signature, signature_len);
+
+        if (cka_sign_changed)
+            template_build_update_attribute(wrapping_key_obj->template, CKA_SIGN,
+                                            &ck_false, sizeof(CK_BBOOL));
+    }
+
+    // update the length of the wrapped key to reflect the signature
+    //
+    *wrapped_key_len = *wrapped_key_len + signature_len;
+
+    goto done;
+
+error:
+    if (wrapped_key) {
+        OPENSSL_cleanse(wrapped_key, *wrapped_key_len);
+        // wrapped_key is passed in by the user; do not free it
+    }
+    *wrapped_key_len = 0;
+
+    if (cka_sign_changed) {
+        template_build_update_attribute(wrapping_key_obj->template, CKA_SIGN,
+                                        &ck_false, sizeof(CK_BBOOL));
+    }
+#endif
+
 done:
     if (count_statistics == TRUE && rc == CKR_OK)
         INC_COUNTER(tokdata, sess, mech, wrapping_key_obj,
                     POLICY_STRENGTH_IDX_0);
+
+#ifdef WRAPFORMAT
+    if (wrapped_key_and_encoded_attributes) {
+        OPENSSL_cleanse(wrapped_key_and_encoded_attributes, wrapped_key_len_plus_one);
+        free(wrapped_key_and_encoded_attributes);
+    }
+    if (signature) {
+        OPENSSL_cleanse(signature, signature_len);
+        free(signature);
+    }
+#endif
 
     if (wrapping_key_obj != NULL) {
         object_put(tokdata, wrapping_key_obj, TRUE);
@@ -1295,6 +1542,17 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
     CK_ATTRIBUTE *new_attrs = NULL;
     CK_ULONG new_attr_count = 0;
     CK_MECHANISM *statistics_mech = mech;
+#ifdef WRAPFORMAT
+    CK_BBOOL ck_true = TRUE;
+    CK_BBOOL ck_false = FALSE;
+    CK_BYTE *received_signature = NULL;
+    CK_BBOOL cka_sign_changed;
+    CK_BYTE encoded_attributes;
+    CK_BYTE *wrapped_key_and_encoded_attributes = NULL;
+    CK_MECHANISM sign_mech;
+    CK_BYTE *computed_signature = NULL;
+    CK_ULONG signature_len;
+#endif
     CK_RV rc;
 
     if (!sess || !wrapped_key || !h_unwrapped_key) {
@@ -1499,6 +1757,60 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
             goto final;
     }
 
+#ifdef WRAPFORMAT
+    // determine the MAC mechanism to be used and the corresponding signature length
+    //
+    switch (mech->mechanism) {
+    case CKM_DES_ECB:
+    case CKM_DES_CBC:
+    case CKM_DES_CBC_PAD:
+        signature_len = 4;
+        sign_mech.mechanism = CKM_DES_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_DES3_ECB:
+    case CKM_DES3_CBC:
+    case CKM_DES3_CBC_PAD:
+        signature_len = 4;
+        sign_mech.mechanism = CKM_DES3_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_AES_ECB:
+    case CKM_AES_CBC:
+    case CKM_AES_CBC_PAD:
+    case CKM_AES_CTR:
+    case CKM_AES_OFB:
+    case CKM_AES_CFB8:
+    case CKM_AES_CFB64:
+    case CKM_AES_CFB128:
+    case CKM_AES_XTS:
+    case CKM_AES_GCM:
+    case CKM_AES_KEY_WRAP:
+    case CKM_AES_KEY_WRAP_PAD:
+    case CKM_AES_KEY_WRAP_KWP:
+    case CKM_AES_KEY_WRAP_PKCS7:
+        // https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.1/os/pkcs11-spec-v3.1-os.html#_Toc111203484
+        signature_len = 8;
+        sign_mech.mechanism = CKM_AES_MAC;
+        sign_mech.ulParameterLen = 0;
+        sign_mech.pParameter = NULL;
+        break;
+    case CKM_RSA_AES_KEY_WRAP:
+    case CKM_ECDH_AES_KEY_WRAP:
+    case CKM_RSA_PKCS_OAEP:
+    case CKM_RSA_PKCS:
+    case CKM_RSA_X_509:
+    default:
+        TRACE_ERROR("not yet implemented.\n");
+        rc = CKR_MECHANISM_INVALID;
+        goto done;
+    }
+
+    received_signature = wrapped_key + wrapped_key_len - signature_len;
+#endif
+
     // looks okay... do the decryption
     ctx = (ENCR_DECR_CONTEXT *) malloc(sizeof(ENCR_DECR_CONTEXT));
     if (!ctx) {
@@ -1514,9 +1826,15 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
     if (rc != CKR_OK)
         goto done;
 
+#ifdef WRAPFORMAT
+    rc = decr_mgr_decrypt(tokdata, sess,
+                          TRUE,
+                          ctx, wrapped_key, wrapped_key_len - signature_len, data, &data_len);
+#else
     rc = decr_mgr_decrypt(tokdata, sess,
                           TRUE,
                           ctx, wrapped_key, wrapped_key_len, data, &data_len);
+#endif
     if (rc != CKR_OK) {
         if (rc == CKR_ENCRYPTED_DATA_LEN_RANGE)
             rc = CKR_WRAPPED_KEY_LEN_RANGE;
@@ -1530,9 +1848,15 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
         goto done;
     }
 
+#ifdef WRAPFORMAT
+    rc = decr_mgr_decrypt(tokdata, sess,
+                          FALSE,
+                          ctx, wrapped_key, wrapped_key_len - signature_len, data, &data_len);
+#else
     rc = decr_mgr_decrypt(tokdata, sess,
                           FALSE,
                           ctx, wrapped_key, wrapped_key_len, data, &data_len);
+#endif
     if (rc != CKR_OK) {
         if (rc == CKR_ENCRYPTED_DATA_LEN_RANGE)
             rc = CKR_WRAPPED_KEY_LEN_RANGE;
@@ -1577,6 +1901,86 @@ CK_RV key_mgr_unwrap_key(STDLL_TokData_t *tokdata,
             goto done;
         }
     }
+
+#ifdef WRAPFORMAT
+    rc = encode_attributes(key_obj->template, &encoded_attributes);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("encode_attributes failed\n");
+        goto done;
+    }
+
+    // concatenate the wrapped key and the encoded attributes
+    //
+    wrapped_key_and_encoded_attributes = (CK_BYTE *) malloc(wrapped_key_len - signature_len + 1);
+    if (!wrapped_key_and_encoded_attributes) {
+        TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+        rc = CKR_HOST_MEMORY;
+        goto done;
+    }
+    memcpy(wrapped_key_and_encoded_attributes,
+           wrapped_key, wrapped_key_len - signature_len);
+    memcpy(wrapped_key_and_encoded_attributes + wrapped_key_len - signature_len,
+           &encoded_attributes, 1);
+
+    // check if CKA_SIGN is CK_FALSE
+    //
+    rc = template_attribute_get_bool(unwrapping_key_obj->template, CKA_SIGN, &flag);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("Failed to find CKA_SIGN in unwrapping key template.\n");
+        goto done;
+    }
+    // if CKA_SIGN is CK_FALSE, set it to CK_TRUE and record that it changed
+    //
+    if (!flag) {
+        rc = template_build_update_attribute(unwrapping_key_obj->template, CKA_SIGN,
+                                             &ck_true, sizeof(CK_BBOOL));
+        if (rc != CKR_OK) {
+            TRACE_ERROR("template_build_update_attribute failed\n");
+            goto done;
+        }
+        cka_sign_changed = TRUE;
+    }
+
+    // compute the signature and clean up
+    //
+    computed_signature = (CK_BYTE *) malloc(signature_len);
+    if (!computed_signature) {
+        TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+        rc = CKR_HOST_MEMORY;
+        goto done;
+    }
+    rc = sign_mgr_init(tokdata, sess, &sess->sign_ctx, &sign_mech, FALSE,
+                       h_unwrapping_key, FALSE, FALSE);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("sign_mgr_init failed\n");
+        goto done;
+    }
+    rc = sign_mgr_sign(tokdata, sess, FALSE, &sess->sign_ctx,
+                       wrapped_key_and_encoded_attributes, wrapped_key_len - signature_len + 1,
+                       computed_signature, &signature_len);
+    if (rc != CKR_OK) {
+        TRACE_ERROR("sign_mgr_sign failed\n");
+        goto done;
+    }
+    sign_mgr_cleanup(tokdata, sess, &sess->sign_ctx);
+
+    if (cka_sign_changed) {
+        rc = template_build_update_attribute(unwrapping_key_obj->template, CKA_SIGN,
+                                             &ck_false, sizeof(CK_BBOOL));
+        if (rc != CKR_OK) {
+            TRACE_ERROR("template_build_update_attribute failed\n");
+            goto done;
+        }
+    }
+
+    int signatures_correspond = memcmp(received_signature, computed_signature,
+                                       signature_len) == 0;
+    if (signatures_correspond == FALSE) {
+        TRACE_ERROR("%s\n", ock_err(ERR_TEMPLATE_INCONSISTENT));
+        rc = CKR_TEMPLATE_INCONSISTENT;
+        goto done;
+    }
+#endif
 
     // at this point, 'key_obj' should contain a skeleton key.  depending on
     // the key type.  we're now ready to plug in the decrypted key data.
@@ -1642,6 +2046,16 @@ done:
         OPENSSL_cleanse(data, data_len);
         free(data);
     }
+#ifdef WRAPFORMAT
+    if (wrapped_key_and_encoded_attributes != NULL) {
+        OPENSSL_cleanse(wrapped_key_and_encoded_attributes, wrapped_key_len - signature_len + 1);
+        free(wrapped_key_and_encoded_attributes);
+    }
+    if (computed_signature != NULL) {
+        OPENSSL_cleanse(computed_signature, signature_len);
+        free(computed_signature);
+    }
+#endif
     if (ctx != NULL) {
         decr_mgr_cleanup(tokdata, sess, ctx);
         free(ctx);

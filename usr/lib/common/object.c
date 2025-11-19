@@ -636,6 +636,9 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
                                   CK_ATTRIBUTE * pTemplate, CK_ULONG ulCount)
 {
     TEMPLATE *new_tmpl = NULL;
+#ifdef CONFLICTCHECK
+    TEMPLATE *tentative = NULL;
+#endif
     CK_BBOOL found;
     CK_ULONG class, subclass;
     CK_RV rc;
@@ -659,6 +662,14 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
         return CKR_HOST_MEMORY;
     }
     memset(new_tmpl, 0x0, sizeof(TEMPLATE));
+#ifdef CONFLICTCHECK
+    tentative = (TEMPLATE *) malloc(sizeof(TEMPLATE));
+    if (!tentative) {
+        TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+        return CKR_HOST_MEMORY;
+    }
+    memset(tentative, 0x0, sizeof(TEMPLATE));
+#endif
 
     rc = template_add_attributes(new_tmpl, pTemplate, ulCount);
     if (rc != CKR_OK) {
@@ -678,6 +689,13 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
         TRACE_DEVEL("template_validate_attributes failed.\n");
         goto error;
     }
+#ifdef STICKYATTRIBUTES
+    rc = template_check_sticky_attributes(obj->template, new_tmpl, class);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_check_sticky_attributes failed.\n");
+        goto error;
+    }
+#endif
 
     if (token_specific.t_set_attribute_values != NULL) {
         rc = token_specific.t_set_attribute_values(tokdata, sess,
@@ -691,11 +709,34 @@ CK_RV object_set_attribute_values(STDLL_TokData_t * tokdata, SESSION *sess,
 
     // merge in the new attributes
     //
+#ifdef CONFLICTCHECK
+    rc = template_copy(tentative, obj->template);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_copy failed\n");
+        goto error;
+    }
+    rc = template_merge(tentative, &new_tmpl);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_merge failed.\n");
+        goto error;
+    }
+    rc = template_check_conflicting_attributes(tentative, class);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_check_conflicting_attributes failed.\n");
+        goto error;
+    }
+    rc = template_merge(obj->template, &tentative);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_merge failed.\n");
+        return rc;
+    }
+#else
     rc = template_merge(obj->template, &new_tmpl);
     if (rc != CKR_OK) {
         TRACE_DEVEL("template_merge failed.\n");
         return rc;
     }
+#endif
 
     return CKR_OK;
 
@@ -705,6 +746,10 @@ error:
     //
     if (new_tmpl)
         template_free(new_tmpl);
+#ifdef CONFLICTCHECK
+    if (tentative)
+        template_free(tentative);
+#endif
 
     return rc;
 }
@@ -836,6 +881,9 @@ CK_RV object_create_skel(STDLL_TokData_t * tokdata,
 {
     TEMPLATE *tmpl = NULL;
     TEMPLATE *tmpl2 = NULL;
+#ifdef CONFLICTCHECK
+    TEMPLATE *tentative = NULL;
+#endif
     OBJECT *o = NULL;
     CK_RV rc;
 
@@ -851,12 +899,23 @@ CK_RV object_create_skel(STDLL_TokData_t * tokdata,
     o = (OBJECT *) calloc(1, sizeof(OBJECT));
     tmpl = (TEMPLATE *) calloc(1, sizeof(TEMPLATE));
     tmpl2 = (TEMPLATE *) calloc(1, sizeof(TEMPLATE));
+#ifdef CONFLICTCHECK
+    tentative = (TEMPLATE *) calloc(1, sizeof(TEMPLATE));
+#endif
 
     if (!o || !tmpl || !tmpl2) {
         TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
         rc = CKR_HOST_MEMORY;
         goto done;
     }
+#ifdef CONFLICTCHECK
+    if (!tentative) {
+        TRACE_ERROR("%s\n", ock_err(ERR_HOST_MEMORY));
+        rc = CKR_HOST_MEMORY;
+        goto done;
+    }
+    memset(tentative, 0x0, sizeof(TEMPLATE));
+#endif
 
     rc = template_add_attributes(tmpl2, pTemplate, ulCount);
     if (rc != CKR_OK)
@@ -896,6 +955,27 @@ CK_RV object_create_skel(STDLL_TokData_t * tokdata,
         }
     }
 
+#ifdef CONFLICTCHECK
+    rc = template_copy(tentative, tmpl);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_copy failed\n");
+        goto done;
+    }
+    rc = template_merge(tentative, &tmpl2);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_merge failed.\n");
+        goto done;
+    }
+    rc = template_check_conflicting_attributes(tentative, class);
+    if (rc != CKR_OK) {
+        TRACE_DEVEL("template_check_conflicting_attributes failed.\n");
+        goto done;
+    }
+    // at this point, we should have a valid object with correct attributes
+    //
+    o->template = tentative;
+    tentative = NULL;
+#else
     rc = template_merge(tmpl, &tmpl2);
     if (rc != CKR_OK) {
         TRACE_DEVEL("template_merge failed.\n");
@@ -905,6 +985,7 @@ CK_RV object_create_skel(STDLL_TokData_t * tokdata,
     //
     o->template = tmpl;
     tmpl = NULL;
+#endif
 
     rc = object_init_lock(o);
     if (rc != CKR_OK)
