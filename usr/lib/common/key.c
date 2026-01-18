@@ -1534,12 +1534,19 @@ CK_RV secret_key_set_default_attributes(TEMPLATE *tmpl, CK_ULONG mode)
     encrypt_attr->type = CKA_ENCRYPT;
     encrypt_attr->ulValueLen = sizeof(CK_BBOOL);
     encrypt_attr->pValue = (CK_BYTE *) encrypt_attr + sizeof(CK_ATTRIBUTE);
+#ifdef CONFLICTCHECK
+    *(CK_BBOOL *) encrypt_attr->pValue = FALSE;
+#else
     *(CK_BBOOL *) encrypt_attr->pValue = TRUE;
-
+#endif
     decrypt_attr->type = CKA_DECRYPT;
     decrypt_attr->ulValueLen = sizeof(CK_BBOOL);
     decrypt_attr->pValue = (CK_BYTE *) decrypt_attr + sizeof(CK_ATTRIBUTE);
+#ifdef CONFLICTCHECK
+    *(CK_BBOOL *) decrypt_attr->pValue = FALSE;
+#else
     *(CK_BBOOL *) decrypt_attr->pValue = TRUE;
+#endif
 
     sign_attr->type = CKA_SIGN;
     sign_attr->ulValueLen = sizeof(CK_BBOOL);
