@@ -2067,8 +2067,10 @@ CK_RV template_check_conflicts_for_attribute(CK_ATTRIBUTE_TYPE attr, TEMPLATE *t
         CK_BOOL value;
         rc = template_attribute_get_bool(tmpl, type, &value);
         if (rc != CKR_OK) {
-            TRACE_DEVEL("Failed to find attribute in key template\n");
-            break;
+            // - a public key does not have CKA_UNWRAP nor CKA_DECRYPT.
+            // - a private key does not have CKA_WRAP nor CKA_ENCRYPT.
+            conflict = conflict->next;
+            continue;
         }
         if (value == TRUE) {
             TRACE_ERROR("%s\n", ock_err(ERR_CONFLICTING_ATTRIBUTE));
@@ -2108,53 +2110,57 @@ CK_RV template_check_conflicting_attributes(TEMPLATE *tmpl, CK_ULONG class)
 
     rc = template_attribute_get_bool(tmpl, CKA_WRAP, &value);
     if (rc != CKR_OK) {
-        TRACE_DEVEL("template_attribute_get_bool failed\n");
-        return rc;
-    }
-    if (value == TRUE) {
-        rc = template_check_conflicts_for_attribute(CKA_WRAP, tmpl);
-        if (rc != CKR_OK) {
-            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
-            return rc;
+        // TRACE_DEVEL("template_attribute_get_bool failed\n");
+        // return rc;
+    } else {
+        if (value == TRUE) {
+            rc = template_check_conflicts_for_attribute(CKA_WRAP, tmpl);
+            if (rc != CKR_OK) {
+                TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+                return rc;
+            }
         }
     }
 
     rc = template_attribute_get_bool(tmpl, CKA_UNWRAP, &value);
     if (rc != CKR_OK) {
-        TRACE_DEVEL("template_attribute_get_bool failed\n");
-        return rc;
-    }
-    if (value == TRUE) {
-        rc = template_check_conflicts_for_attribute(CKA_UNWRAP, tmpl);
-        if (rc != CKR_OK) {
-            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
-            return rc;
+        // TRACE_DEVEL("template_attribute_get_bool failed\n");
+        // return rc;
+    } else {
+        if (value == TRUE) {
+            rc = template_check_conflicts_for_attribute(CKA_UNWRAP, tmpl);
+            if (rc != CKR_OK) {
+                TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+                return rc;
+            }
         }
     }
     
     rc = template_attribute_get_bool(tmpl, CKA_ENCRYPT, &value);
     if (rc != CKR_OK) {
-        TRACE_DEVEL("template_attribute_get_bool failed\n");
-        return rc;
-    }
-    if (value == TRUE) {
-        rc = template_check_conflicts_for_attribute(CKA_ENCRYPT, tmpl);
-        if (rc != CKR_OK) {
-            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
-            return rc;
+        // TRACE_DEVEL("template_attribute_get_bool failed\n");
+        // return rc;
+    } else {
+        if (value == TRUE) {
+            rc = template_check_conflicts_for_attribute(CKA_ENCRYPT, tmpl);
+            if (rc != CKR_OK) {
+                TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+                return rc;
+            }
         }
     }
 
     rc = template_attribute_get_bool(tmpl, CKA_DECRYPT, &value);
     if (rc != CKR_OK) {
-        TRACE_DEVEL("template_attribute_get_bool failed\n");
-        return rc;
-    }
-    if (value == TRUE) {
-        rc = template_check_conflicts_for_attribute(CKA_DECRYPT, tmpl);
-        if (rc != CKR_OK) {
-            TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
-            return rc;
+        // TRACE_DEVEL("template_attribute_get_bool failed\n");
+        // return rc;
+    } else {
+        if (value == TRUE) {
+            rc = template_check_conflicts_for_attribute(CKA_DECRYPT, tmpl);
+            if (rc != CKR_OK) {
+                TRACE_DEVEL("template_check_conflicts_for_attribute failed\n");
+                return rc;
+            }
         }
     }
 
