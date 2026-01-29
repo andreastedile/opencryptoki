@@ -2020,24 +2020,35 @@ void dump_template(TEMPLATE *tmpl)
 DL_NODE* get_conflicting_attributes(CK_ATTRIBUTE_TYPE attribute)
 {
     DL_NODE *node = NULL;
-    CK_ATTRIBUTE_TYPE type;
+    CK_ATTRIBUTE_TYPE *type;
+
     switch (attribute)
     {
         case CKA_DECRYPT:
-            type = CKA_WRAP;
-            node = dlist_add_as_first(node, &type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_WRAP;
+            node = dlist_add_as_first(node, type);
             break;
         case CKA_WRAP:
-            type = CKA_DECRYPT;
-            node = dlist_add_as_first(node, &type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_DECRYPT;
+            node = dlist_add_as_first(node, type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_UNWRAP;
+            node = dlist_add_as_first(node, type);
             break;
         case CKA_ENCRYPT:
-            type = CKA_UNWRAP;
-            node = dlist_add_as_first(node, &type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_UNWRAP;
+            node = dlist_add_as_first(node, type);
             break;
         case CKA_UNWRAP:
-            type = CKA_ENCRYPT;
-            node = dlist_add_as_first(node, &type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_ENCRYPT;
+            node = dlist_add_as_first(node, type);
+            type = malloc(sizeof(CK_ATTRIBUTE_TYPE));
+            *type = CKA_WRAP;
+            node = dlist_add_as_first(node, type);
             break;
     }
     return node;
@@ -2064,6 +2075,13 @@ CK_RV template_check_conflicts_for_attribute(CK_ATTRIBUTE_TYPE attr, TEMPLATE *t
             rc = CKR_TEMPLATE_INCONSISTENT;
             break;
         }
+        conflict = conflict->next;
+    }
+
+    conflict = conflicts;
+    while (conflict != NULL) {
+        CK_ATTRIBUTE_TYPE *type = (CK_ATTRIBUTE_TYPE *)conflict->data;
+        free(type);
         conflict = conflict->next;
     }
 
@@ -2155,15 +2173,13 @@ sticky_mode get_sticky_mode(CK_ATTRIBUTE_TYPE type)
 {
     switch (type) {
     case CKA_WRAP:
-	case CKA_UNWRAP:
-	case CKA_ENCRYPT:
-	case CKA_DECRYPT:
-	case CKA_SIGN:
-	case CKA_VERIFY:
-	case CKA_SENSITIVE:
-	    return sticky_on;
-	case CKA_EXTRACTABLE:
-	    return sticky_off;
+        return sticky_on;
+    case CKA_DECRYPT:
+        return sticky_on;
+    case CKA_UNWRAP:
+        return sticky_on;
+    case CKA_ENCRYPT:
+        return sticky_on;
     default:
         return sticky_both;
     }
@@ -2172,17 +2188,11 @@ sticky_mode get_sticky_mode(CK_ATTRIBUTE_TYPE type)
 CK_BOOL attribute_is_sticky(CK_ATTRIBUTE_PTR attr)
 {
     switch (attr->type) {
-	case CKA_ENCRYPT:
-	case CKA_DECRYPT:
-	case CKA_SIGN:
-	case CKA_VERIFY:
 	case CKA_WRAP:
-	case CKA_UNWRAP:
-	case CKA_SENSITIVE:
-	case CKA_EXTRACTABLE:
-	case CKA_ALWAYS_SENSITIVE:
-	case CKA_NEVER_EXTRACTABLE:
-	    return TRUE;
+    case CKA_DECRYPT:
+    case CKA_UNWRAP:
+    case CKA_ENCRYPT:
+        return TRUE;
     default:
         return FALSE;
     }
